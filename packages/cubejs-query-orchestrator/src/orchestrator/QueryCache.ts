@@ -15,7 +15,7 @@ type QueryOptions = {
   renewalThreshold?: number,
 };
 export type QueryTuple = [sql: string, params: unknown[], options?: QueryOptions];
-export type QueryWithParams = QueryTuple | string;
+export type QueryWithParams = QueryTuple;
 type Query = {
   requestId?: string;
   dataSource: string;

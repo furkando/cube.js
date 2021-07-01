@@ -1,7 +1,6 @@
 import crypto from 'crypto';
 import R from 'ramda';
-
-import { getEnv } from '@cubejs-backend/shared';
+import { getEnv, timeSeries, FROM_PARTITION_RANGE, TO_PARTITION_RANGE, inDbTimeZone, extractDate } from '@cubejs-backend/shared';
 
 import { cancelCombinator, SaveCancelFn } from '../driver/utils';
 import { RedisCacheDriver } from './RedisCacheDriver';
@@ -83,6 +82,24 @@ type TableCacheEntry = {
   // eslint-disable-next-line camelcase
   table_name?: string;
   TABLE_NAME?: string;
+};
+
+type QueryDateRange = [string, string];
+
+type IndexDescription = {
+  sql: string;
+  indexName: string;
+};
+
+type PreAggregationDescription = {
+  indexesSql: IndexDescription[];
+  invalidateKeyQueries: QueryWithParams[];
+  sql: QueryWithParams;
+  loadSql: QueryWithParams;
+  tableName: string;
+  matchedTimeDimensionDateRange: QueryDateRange;
+  partitionGranularity: string;
+  preAggregationStartEndQueries: [QueryWithParams, QueryWithParams];
 };
 
 const tablesToVersionEntries = (schema, tables: TableCacheEntry[]): VersionEntry[] => R.sortBy(
@@ -318,7 +335,12 @@ class PreAggregationLoadCache {
   }
 }
 
-class PreAggregationLoader {
+type LoadPreAggregationResult = {
+  targetTableName: string;
+  refreshKeyValues: any[]
+} | string;
+
+export class PreAggregationLoader {
   // eslint-disable-next-line no-use-before-define
   private preAggregations: PreAggregations;
 
@@ -374,7 +396,7 @@ class PreAggregationLoader {
     }
   }
 
-  public async loadPreAggregation() {
+  public async loadPreAggregation(): Promise<LoadPreAggregationResult> {
     const notLoadedKey = (this.preAggregation.invalidateKeyQueries || [])
       .find(keyQuery => !this.loadCache.hasKeyQueryResult(keyQuery));
     if (notLoadedKey && !this.waitForRenew) {
@@ -924,6 +946,167 @@ class PreAggregationLoader {
   }
 }
 
+export class PreAggregationPartitionRangeLoader {
+  public constructor(
+    private readonly redisPrefix: string,
+    private readonly driverFactory: DriverFactory,
+    private readonly logger: any,
+    private readonly queryCache: QueryCache,
+    // eslint-disable-next-line no-use-before-define
+    private readonly preAggregations: PreAggregations,
+    private readonly preAggregation: PreAggregationDescription,
+    private readonly preAggregationsTablesToTempTables: any,
+    private readonly loadCache: any,
+    private readonly options: any = {}
+  ) {
+  }
+
+  private async loadRangeQuery(rangeQuery) {
+    return this.loadCache.keyQueryResult(rangeQuery, false, 10, 60 * 60); // TODO 60 * 60
+  }
+
+  private replacePartitionSqlAndParams(
+    query: QueryWithParams,
+    dateRange: QueryDateRange,
+    partitionTableName: string
+  ): QueryWithParams {
+    const [sql, params] = query;
+    return [sql.replace(this.preAggregation.tableName, partitionTableName), params.map(
+      param => {
+        if (dateRange && param === FROM_PARTITION_RANGE) {
+          return PreAggregationPartitionRangeLoader.inDbTimeZone(this.preAggregation, dateRange[0]);
+        } else if (dateRange && param === TO_PARTITION_RANGE) {
+          return PreAggregationPartitionRangeLoader.inDbTimeZone(this.preAggregation, dateRange[1]);
+        } else {
+          return param;
+        }
+      },
+    )];
+  }
+
+  private partitionPreAggregationDescription(range: QueryDateRange): PreAggregationDescription {
+    const partitionTableName = PreAggregationPartitionRangeLoader.partitionTableName(
+      this.preAggregation.tableName, this.preAggregation.partitionGranularity, range
+    );
+    return {
+      ...this.preAggregation,
+      tableName: partitionTableName,
+      loadSql: this.preAggregation.loadSql &&
+        this.replacePartitionSqlAndParams(this.preAggregation.loadSql, range, partitionTableName),
+      sql: this.preAggregation.sql &&
+        this.replacePartitionSqlAndParams(this.preAggregation.sql, range, partitionTableName),
+      // TODO adjust refreshKeyRenewalThreshold of refreshKeys beyond update window
+      invalidateKeyQueries: (this.preAggregation.invalidateKeyQueries || [])
+        .map(q => this.replacePartitionSqlAndParams(q, range, partitionTableName)),
+      indexesSql: (this.preAggregation.indexesSql || [])
+        .map(q => ({ ...q, sql: q.sql.replace(this.preAggregation.tableName, partitionTableName) }))
+    };
+  }
+
+  public async loadPreAggregations(): Promise<LoadPreAggregationResult> {
+    if (this.preAggregation.preAggregationStartEndQueries) {
+      const { preAggregationStartEndQueries } = this.preAggregation;
+      const [startDate, endDate] = await Promise.all(
+        preAggregationStartEndQueries.map(
+          async rangeQuery => PreAggregationPartitionRangeLoader.extractDate(await this.loadRangeQuery(rangeQuery))
+        )
+      );
+      const partitionRanges = PreAggregationPartitionRangeLoader.timeSeries(
+        this.preAggregation.partitionGranularity,
+        PreAggregationPartitionRangeLoader.intersectDateRanges(
+          [startDate, endDate],
+          this.preAggregation.matchedTimeDimensionDateRange
+        )
+      );
+      const partitionLoaders = partitionRanges.map(range => new PreAggregationLoader(
+        this.redisPrefix,
+        this.driverFactory,
+        this.logger,
+        this.queryCache,
+        this.preAggregations,
+        this.partitionPreAggregationDescription(range),
+        this.preAggregationsTablesToTempTables,
+        this.loadCache,
+        this.options
+      ));
+      const allTableTargetNames = await Promise.all(partitionLoaders.map(l => l.loadPreAggregation()));
+      const unionTargetTableName = allTableTargetNames
+        .map(targetTableName => `SELECT * FROM ${typeof targetTableName === 'string' ? targetTableName : targetTableName.targetTableName}`)
+        .join(' UNION ALL ');
+      return {
+        targetTableName: `(${unionTargetTableName})`,
+        refreshKeyValues: allTableTargetNames.map(t => (typeof t === 'object' ? t.refreshKeyValues : {}))
+      };
+    } else {
+      return new PreAggregationLoader(
+        this.redisPrefix,
+        this.driverFactory,
+        this.logger,
+        this.queryCache,
+        this.preAggregations,
+        this.preAggregation,
+        this.preAggregationsTablesToTempTables,
+        this.loadCache,
+        this.options
+      ).loadPreAggregation();
+    }
+  }
+
+  private static checkDataRangeType(range: QueryDateRange) {
+    if (!range) {
+      return;
+    }
+    if (range.length !== 2) {
+      throw new Error(`Date range expected to be an array with 2 elements but ${range} found`);
+    }
+    if (typeof range[0] !== 'string' || typeof range[1] !== 'string') {
+      throw new Error(`Date range expected to be a string array but ${range} found`);
+    }
+    if (range[0].length !== 23 || range[1].length !== 23) {
+      throw new Error(`Date range expected to be in YYYY-MM-DDTHH:mm:ss.SSS format but ${range} found`);
+    }
+  }
+
+  public static intersectDateRanges(rangeA: QueryDateRange | null, rangeB: QueryDateRange | null): QueryDateRange {
+    PreAggregationPartitionRangeLoader.checkDataRangeType(rangeA);
+    PreAggregationPartitionRangeLoader.checkDataRangeType(rangeB);
+    if (!rangeB) {
+      return rangeA;
+    }
+    if (!rangeA) {
+      return rangeB;
+    }
+    return [
+      rangeA[0] > rangeB[0] ? rangeA[0] : rangeB[0],
+      rangeA[1] < rangeB[1] ? rangeA[1] : rangeB[1],
+    ];
+  }
+
+  public static timeSeries(granularity: string, dateRange: QueryDateRange): QueryDateRange[] {
+    return timeSeries(granularity, dateRange);
+  }
+
+  public static partitionTableName(tableName: string, partitionGranularity: string, dateRange: string[]) {
+    const partitionSuffix = dateRange[0].substring(
+      0,
+      partitionGranularity === 'hour' ? 13 : 10
+    ).replace(/[-T:]/g, '');
+    return `${tableName}${partitionSuffix}`;
+  }
+
+  public static inDbTimeZone(preAggregationDescription: any, timestamp: string): string {
+    return inDbTimeZone(preAggregationDescription.timezone, preAggregationDescription.timestampFormat, timestamp);
+  }
+
+  public static extractDate(data: any): string {
+    return extractDate(data);
+  }
+
+  public static FROM_PARTITION_RANGE = FROM_PARTITION_RANGE;
+
+  public static TO_PARTITION_RANGE = TO_PARTITION_RANGE;
+}
+
 type PreAggregationsOptions = {
   preAggregationsSchemaCacheExpire?: number;
   loadCacheQueueOptions?: any;
@@ -1001,7 +1184,7 @@ export class PreAggregations {
     };
 
     return preAggregations.map(p => (preAggregationsTablesToTempTables) => {
-      const loader = new PreAggregationLoader(
+      const loader = new PreAggregationPartitionRangeLoader(
         this.redisPrefix,
         () => this.driverFactory(p.dataSource || 'default'),
         this.logger,
@@ -1017,7 +1200,7 @@ export class PreAggregations {
         }
       );
 
-      const preAggregationPromise = () => loader.loadPreAggregation().then(async targetTableName => {
+      const preAggregationPromise = () => loader.loadPreAggregations().then(async targetTableName => {
         const usedPreAggregation = {
           ...(typeof targetTableName === 'string' ? { targetTableName } : targetTableName),
           type: p.type,

@@ -4,6 +4,7 @@ import cronParser from 'cron-parser';
 
 import moment from 'moment-timezone';
 import inflection from 'inflection';
+import { inDbTimeZone } from '@cubejs-backend/shared';
 
 import { UserError } from '../compiler/UserError';
 import { BaseMeasure } from './BaseMeasure';
@@ -1666,7 +1667,14 @@ export class BaseQuery {
   }
 
   inDbTimeZone(date) {
-    return this.inIntegrationTimeZone(date).clone().utc().format();
+    return inDbTimeZone(this.timezone, this.timestampFormat(), date);
+  }
+
+  /**
+   * @return {string}
+   */
+  timestampFormat() {
+    return 'YYYY-MM-DD[T]HH:mm:ss.SSS[Z]';
   }
 
   /**

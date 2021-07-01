@@ -22,7 +22,15 @@ class MockDriver {
     }
 
     if (query.match(/^SELECT NOW\(\)$/)) {
-      promise = promise.then(() => new Date().toJSON());
+      promise = promise.then(() => [{ now: new Date().toJSON() }]);
+    }
+
+    if (query.match(/^SELECT MAX\(timestamp\)/)) {
+      promise = promise.then(() => [{ max: new Date('2021-06-01T00:00:00.000Z').toJSON() }]);
+    }
+
+    if (query.match(/^SELECT MIN\(timestamp\)/)) {
+      promise = promise.then(() => [{ min: new Date('2021-01-01T00:00:00.000Z').toJSON() }]);
     }
 
     if (this.tablesReady.find(t => query.indexOf(t) !== -1)) {
@@ -750,6 +758,35 @@ describe('QueryOrchestrator', () => {
       structure_version: 'ezlvkhjl',
       naming_version: 2
     });
+  });
+
+  test('range partitions', async () => {
+    const query = {
+      query: 'SELECT * FROM stb_pre_aggregations.orders_d',
+      values: [],
+      cacheKeyQueries: {
+        refreshKeyRenewalThresholds: [],
+        queries: []
+      },
+      preAggregations: [{
+        preAggregationsSchema: 'stb_pre_aggregations',
+        tableName: 'stb_pre_aggregations.orders_d',
+        loadSql: [
+          'CREATE TABLE stb_pre_aggregations.orders_d AS SELECT * FROM public.orders WHERE timestamp >= ? AND timestamp <= ?',
+          ['__FROM_PARTITION_RANGE', '__TO_PARTITION_RANGE']
+        ],
+        invalidateKeyQueries: [['SELECT NOW() as now', []]],
+        refreshKeyRenewalThresholds: [86400],
+        preAggregationStartEndQueries: [
+          ['SELECT MIN(timestamp) FROM orders', []],
+          ['SELECT MAX(timestamp) FROM orders', []],
+        ],
+        partitionGranularity: 'day',
+        timezone: 'UTC'
+      }],
+      requestId: 'range partitions',
+    };
+    await queryOrchestrator.fetchQuery(query);
   });
 
   test('loadRefreshKeys', async () => {
