@@ -1742,7 +1742,7 @@ export class BaseQuery {
     const refreshKeyThresholdQueryByCube = (cube) => {
       const cubeFromPath = this.cubeEvaluator.cubeFromPath(cube);
       if (cubeFromPath.refreshKey && cubeFromPath.refreshKey.every) {
-        return this.refreshKeyRenewalThresholdForInterval(cubeFromPath.refreshKey);
+        return this.refreshKeyRenewalThresholdForInterval(cubeFromPath.refreshKey, !cubeFromPath.refreshKey.sql);
       }
 
       return this.defaultRefreshKeyRenewalThreshold();
@@ -2101,14 +2101,17 @@ export class BaseQuery {
               ).concat({
                 external: false,
                 renewalThreshold: preAggregation.refreshKey.every
-                  ? this.refreshKeyRenewalThresholdForInterval(preAggregation.refreshKey)
+                  ? this.refreshKeyRenewalThresholdForInterval(preAggregation.refreshKey, false)
                   : this.defaultRefreshKeyRenewalThreshold(),
               })
             ];
           }
 
           let [refreshKey, refreshKeyExternal] = this.everyRefreshKeySql(preAggregation.refreshKey);
-          let renewalThreshold = this.refreshKeyRenewalThresholdForInterval(preAggregation.refreshKey);
+          let renewalThreshold = this.refreshKeyRenewalThresholdForInterval(
+            preAggregation.refreshKey,
+            !preAggregation.refreshKey.sql
+          );
           if (preAggregation.refreshKey.incremental) {
             if (!preAggregation.partitionGranularity) {
               throw new UserError('Incremental refresh key can only be used for partitioned pre-aggregations');
@@ -2132,6 +2135,7 @@ export class BaseQuery {
               );
             }
           }
+
           if (preAggregation.refreshKey.every || preAggregation.refreshKey.incremental) {
             return [
               this.paramAllocator.buildSqlAndParams(`SELECT ${refreshKey}`).concat({
@@ -2188,15 +2192,27 @@ export class BaseQuery {
     );
   }
 
-  refreshKeyRenewalThresholdForInterval(refreshKey) {
+  refreshKeyRenewalThresholdForInterval(refreshKey, maxThresholdLimit = true) {
     const { every } = refreshKey;
 
     if (/^(\d+) (second|minute|hour|day|week)s?$/.test(every)) {
-      return Math.max(Math.min(Math.round(this.parseSecondDuration(every) / 10), 300), 1);
+      const threshold = Math.max(Math.round(this.parseSecondDuration(every) / 10), 1);
+
+      if (maxThresholdLimit) {
+        return Math.min(threshold, 300);
+      }
+
+      return threshold;
     }
 
     const { interval } = this.calcIntervalForCronString(refreshKey);
-    return Math.max(Math.min(Math.round(interval / 10), 300), 1);
+    const threshold = Math.max(Math.round(interval / 10), 1);
+
+    if (maxThresholdLimit) {
+      return Math.min(threshold, 300);
+    }
+
+    return threshold;
   }
 
   preAggregationStartEndQueries(cube, preAggregation) {

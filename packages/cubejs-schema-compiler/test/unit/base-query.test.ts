@@ -386,8 +386,7 @@ describe('Base Query', () => {
           {
             // false, because there is no externalQueryClass
             external: false,
-            // max 300, @see refreshKeyRenewalThresholdForInterval
-            renewalThreshold: 300,
+            renewalThreshold: 360,
           }
         ]
       ]);
@@ -414,7 +413,6 @@ describe('Base Query', () => {
           [],
           {
             external: false,
-            // max 300, @see refreshKeyRenewalThresholdForInterval
             renewalThreshold: 72,
           }
         ]
