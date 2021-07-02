@@ -2100,7 +2100,9 @@ export class BaseQuery {
                 preAggregationQueryForSql.evaluateSql(cube, preAggregation.refreshKey.sql)
               ).concat({
                 external: false,
-                renewalThreshold: this.defaultRefreshKeyRenewalThreshold(),
+                renewalThreshold: preAggregation.refreshKey.every
+                  ? this.refreshKeyRenewalThresholdForInterval(preAggregation.refreshKey)
+                  : this.defaultRefreshKeyRenewalThreshold(),
               })
             ];
           }
