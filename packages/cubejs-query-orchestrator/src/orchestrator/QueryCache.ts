@@ -15,6 +15,7 @@ type QueryOptions = {
   renewalThreshold?: number;
   updateWindowSeconds?: number;
   renewalThresholdOutsideUpdateWindow?: number;
+  incremental?: boolean;
 };
 export type QueryTuple = [sql: string, params: unknown[], options?: QueryOptions];
 export type QueryWithParams = QueryTuple;

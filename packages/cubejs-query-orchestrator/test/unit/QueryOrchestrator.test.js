@@ -30,7 +30,7 @@ class MockDriver {
     }
 
     if (query.match(/^SELECT MIN\(timestamp\)/)) {
-      promise = promise.then(() => [{ min: new Date('2021-01-01T00:00:00.000Z').toJSON() }]);
+      promise = promise.then(() => [{ min: new Date('2021-05-01T00:00:00.000Z').toJSON() }]);
     }
 
     if (this.tablesReady.find(t => query.indexOf(t) !== -1)) {
@@ -118,37 +118,43 @@ describe('QueryOrchestrator', () => {
   let mockDriver = null;
   let fooMockDriver = null;
   let barMockDriver = null;
-  let csvMockDriver = null;
   let externalMockDriver = null;
-  const queryOrchestrator = new QueryOrchestrator(
-    'TEST', (dataSource) => {
-      if (dataSource === 'foo') {
-        return fooMockDriver;
-      } else if (dataSource === 'bar') {
-        return barMockDriver;
-      } else if (dataSource === 'csv') {
-        return csvMockDriver;
-      } else {
-        return mockDriver;
-      }
-    },
-    (msg, params) => console.log(new Date().toJSON(), msg, params), {
-      preAggregationsOptions: {
-        queueOptions: {
-          executionTimeout: 2
-        },
-        usedTablePersistTime: 1
-      },
-      externalDriverFactory: () => externalMockDriver
-    }
-  );
+  let queryOrchestrator = null;
+  let testCount = 1;
 
   beforeEach(() => {
-    mockDriver = new MockDriver();
-    fooMockDriver = new MockDriver();
-    barMockDriver = new MockDriver();
-    csvMockDriver = new MockDriver({ csvImport: 'true' });
-    externalMockDriver = new ExternalMockDriver();
+    const mockDriverLocal = new MockDriver();
+    const fooMockDriverLocal = new MockDriver();
+    const barMockDriverLocal = new MockDriver();
+    const csvMockDriverLocal = new MockDriver({ csvImport: 'true' });
+    const externalMockDriverLocal = new ExternalMockDriver();
+
+    queryOrchestrator = new QueryOrchestrator(
+      `ORCHESTRATOR_TEST_${testCount++}`, (dataSource) => {
+        if (dataSource === 'foo') {
+          return fooMockDriverLocal;
+        } else if (dataSource === 'bar') {
+          return barMockDriverLocal;
+        } else if (dataSource === 'csv') {
+          return csvMockDriverLocal;
+        } else {
+          return mockDriverLocal;
+        }
+      },
+      (msg, params) => console.log(new Date().toJSON(), msg, params), {
+        preAggregationsOptions: {
+          queueOptions: {
+            executionTimeout: 2
+          },
+          usedTablePersistTime: 1
+        },
+        externalDriverFactory: () => externalMockDriverLocal,
+      }
+    );
+    mockDriver = mockDriverLocal;
+    fooMockDriver = fooMockDriverLocal;
+    barMockDriver = barMockDriverLocal;
+    externalMockDriver = externalMockDriverLocal;
   });
 
   afterEach(async () => {
@@ -777,7 +783,8 @@ describe('QueryOrchestrator', () => {
         invalidateKeyQueries: [['SELECT CASE WHEN NOW() > ? THEN NOW() END as now', ['__TO_PARTITION_RANGE'], {
           renewalThreshold: 1,
           updateWindowSeconds: 86400,
-          renewalThresholdOutsideUpdateWindow: 86400
+          renewalThresholdOutsideUpdateWindow: 86400,
+          incremental: true
         }]],
         preAggregationStartEndQueries: [
           ['SELECT MIN(timestamp) FROM orders', []],
@@ -790,11 +797,11 @@ describe('QueryOrchestrator', () => {
     };
     await queryOrchestrator.fetchQuery(query);
     console.log(JSON.stringify(mockDriver.executedQueries));
-    expect(mockDriver.executedQueries.filter(q => q.match(/NOW/)).length).toEqual(152);
+    const nowQueries = mockDriver.executedQueries.filter(q => q.match(/NOW/)).length;
     await mockDriver.delay(2000);
     await queryOrchestrator.fetchQuery(query);
     console.log(JSON.stringify(mockDriver.executedQueries));
-    expect(mockDriver.executedQueries.filter(q => q.match(/NOW/)).length).toEqual(152);
+    expect(mockDriver.executedQueries.filter(q => q.match(/NOW/)).length).toEqual(nowQueries);
   });
 
   test('loadRefreshKeys', async () => {

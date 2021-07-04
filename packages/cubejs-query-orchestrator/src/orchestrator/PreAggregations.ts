@@ -1,13 +1,13 @@
 import crypto from 'crypto';
 import R from 'ramda';
 import {
-  getEnv,
-  timeSeries,
-  FROM_PARTITION_RANGE,
-  TO_PARTITION_RANGE,
-  inDbTimeZone,
-  extractDate,
   addSecondsToLocalTimestamp,
+  extractDate,
+  FROM_PARTITION_RANGE,
+  getEnv,
+  inDbTimeZone,
+  timeSeries,
+  TO_PARTITION_RANGE,
 } from '@cubejs-backend/shared';
 
 import { cancelCombinator, SaveCancelFn } from '../driver/utils';
@@ -17,14 +17,7 @@ import { QueryCache, QueryTuple, QueryWithParams } from './QueryCache';
 import { ContinueWaitError } from './ContinueWaitError';
 import { DriverFactory, DriverFactoryByDataSource } from './DriverFactory';
 import { CacheDriverInterface } from './cache-driver.interface';
-import {
-  BaseDriver,
-  DownloadTableCSVData,
-  DownloadTableData,
-  DownloadTableMemoryData,
-  StreamOptions, StreamTableData,
-  UnloadOptions,
-} from '../driver';
+import { BaseDriver, DownloadTableData, StreamOptions, UnloadOptions } from '../driver';
 import { QueryQueue } from './QueryQueue';
 import { DriverInterface } from '../driver/driver.interface';
 import { LargeStreamWarning } from './StreamObjectsCounter';
@@ -167,7 +160,7 @@ class PreAggregationLoadCache {
 
   private requestId: any;
 
-  private versionEntries: { [redisKey: string]: VersionEntriesObj };
+  private versionEntries: { [redisKey: string]: Promise<VersionEntriesObj> };
 
   private tables: { [redisKey: string]: TableCacheEntry[] };
 
@@ -249,46 +242,53 @@ class PreAggregationLoadCache {
     return this.tables[redisKey];
   }
 
+  private async calculateVersionEntries(preAggregation): Promise<VersionEntriesObj> {
+    let versionEntries = tablesToVersionEntries(
+      preAggregation.preAggregationsSchema,
+      await this.getTablesQuery(preAggregation)
+    );
+    // It presumes strong consistency guarantees for external pre-aggregation tables ingestion
+    if (!preAggregation.external) {
+      // eslint-disable-next-line
+      const [active, toProcess, queries] = await this.fetchQueryStageState();
+      const targetTableNamesInQueue = (Object.keys(queries))
+        // eslint-disable-next-line no-use-before-define
+        .map(q => PreAggregations.targetTableName(queries[q].query.newVersionEntry));
+
+      versionEntries = versionEntries.filter(
+        // eslint-disable-next-line no-use-before-define
+        e => targetTableNamesInQueue.indexOf(PreAggregations.targetTableName(e)) === -1
+      );
+    }
+
+    const byContent: { [key: string]: VersionEntry } = {};
+    const byStructure: { [key: string]: VersionEntry } = {};
+    const byTableName: { [key: string]: VersionEntry } = {};
+
+    versionEntries.forEach(e => {
+      const contentKey = `${e.table_name}_${e.content_version}`;
+      if (!byContent[contentKey]) {
+        byContent[contentKey] = e;
+      }
+      const structureKey = `${e.table_name}_${e.structure_version}`;
+      if (!byStructure[structureKey]) {
+        byStructure[structureKey] = e;
+      }
+      if (!byTableName[e.table_name]) {
+        byTableName[e.table_name] = e;
+      }
+    });
+
+    return { versionEntries, byContent, byStructure, byTableName };
+  }
+
   public async getVersionEntries(preAggregation): Promise<VersionEntriesObj> {
     const redisKey = this.tablesRedisKey(preAggregation);
     if (!this.versionEntries[redisKey]) {
-      let versionEntries = tablesToVersionEntries(
-        preAggregation.preAggregationsSchema,
-        await this.getTablesQuery(preAggregation)
-      );
-      // It presumes strong consistency guarantees for external pre-aggregation tables ingestion
-      if (!preAggregation.external) {
-        // eslint-disable-next-line
-        const [active, toProcess, queries] = await this.fetchQueryStageState();
-        const targetTableNamesInQueue = (Object.keys(queries))
-          // eslint-disable-next-line no-use-before-define
-          .map(q => PreAggregations.targetTableName(queries[q].query.newVersionEntry));
-
-        versionEntries = versionEntries.filter(
-          // eslint-disable-next-line no-use-before-define
-          e => targetTableNamesInQueue.indexOf(PreAggregations.targetTableName(e)) === -1
-        );
-      }
-
-      const byContent: { [key: string]: VersionEntry } = {};
-      const byStructure: { [key: string]: VersionEntry } = {};
-      const byTableName: { [key: string]: VersionEntry } = {};
-
-      versionEntries.forEach(e => {
-        const contentKey = `${e.table_name}_${e.content_version}`;
-        if (!byContent[contentKey]) {
-          byContent[contentKey] = e;
-        }
-        const structureKey = `${e.table_name}_${e.structure_version}`;
-        if (!byStructure[structureKey]) {
-          byStructure[structureKey] = e;
-        }
-        if (!byTableName[e.table_name]) {
-          byTableName[e.table_name] = e;
-        }
+      this.versionEntries[redisKey] = this.calculateVersionEntries(preAggregation).catch(e => {
+        delete this.versionEntries[redisKey];
+        throw e;
       });
-
-      this.versionEntries[redisKey] = { versionEntries, byContent, byStructure, byTableName };
     }
     return this.versionEntries[redisKey];
   }
@@ -980,8 +980,8 @@ export class PreAggregationPartitionRangeLoader {
     partitionTableName: string
   ): QueryWithParams {
     const [sql, params, options] = query;
-    const updateWindowToBoundary = options?.updateWindowSeconds && addSecondsToLocalTimestamp(
-      dateRange[1], this.preAggregation.timezone, options?.updateWindowSeconds
+    const updateWindowToBoundary = options?.incremental && addSecondsToLocalTimestamp(
+      dateRange[1], this.preAggregation.timezone, options?.updateWindowSeconds || 0
     );
     return [sql.replace(this.preAggregation.tableName, partitionTableName), params.map(
       param => {
@@ -996,8 +996,7 @@ export class PreAggregationPartitionRangeLoader {
     ), {
       ...options,
       renewalThreshold:
-        options?.updateWindowSeconds &&
-        updateWindowToBoundary < new Date() ?
+        options?.incremental && updateWindowToBoundary < new Date() ?
           // if updateWindowToBoundary passed just moments ago we want to renew it earlier in case of server
           // and db clock don't match
           Math.min(

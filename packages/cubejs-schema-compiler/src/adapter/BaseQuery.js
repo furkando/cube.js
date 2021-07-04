@@ -1729,6 +1729,10 @@ export class BaseQuery {
     return this.refreshKeysByCubes(this.allCubeNames, transformFn);
   }
 
+  refreshKeySelect(sql) {
+    return `SELECT ${sql} as refresh_key`;
+  }
+
   refreshKeysByCubes(cubes, transformFn) {
     const refreshKeyQueryByCube = (cube) => {
       const cubeFromPath = this.cubeEvaluator.cubeFromPath(cube);
@@ -1739,12 +1743,12 @@ export class BaseQuery {
 
         if (cubeFromPath.refreshKey.every) {
           const [sql, external] = this.everyRefreshKeySql(cubeFromPath.refreshKey);
-          return [`SELECT ${sql}`, external];
+          return [this.refreshKeySelect(sql), external];
         }
       }
 
       const [sql, external] = this.everyRefreshKeySql(this.defaultEveryRefreshKey());
-      return [`SELECT ${sql}`, external];
+      return [this.refreshKeySelect(sql), external];
     };
 
     const refreshKeyThresholdQueryByCube = (cube) => {
@@ -1958,7 +1962,7 @@ export class BaseQuery {
     const every = refreshKey.every || '1 hour';
 
     if (/^(\d+) (second|minute|hour|day|week)s?$/.test(every)) {
-      return [this.floorSql(`(${this.unixTimestampSql()}) / ${this.parseSecondDuration(every)}`), external];
+      return [this.floorSql(`(${this.unixTimestampSql()}) / ${this.parseSecondDuration(every)}`), external, this];
     }
 
     const { dayOffset, utcOffset, interval } = this.calcIntervalForCronString(refreshKey);
@@ -1973,7 +1977,7 @@ export class BaseQuery {
      * SELECT ((3600 * (24 + 8) - 28800) / 86400); -- 1
      * SELECT ((3600 * (48 + 8) - 28800) / 86400); -- 2
      */
-    return [this.floorSql(`(${utcOffset} + ${this.unixTimestampSql()} - ${dayOffset}) / ${interval}`), external];
+    return [this.floorSql(`(${utcOffset} + ${this.unixTimestampSql()} - ${dayOffset}) / ${interval}`), external, this];
   }
 
   granularityFor(momentDate) {
@@ -2062,10 +2066,16 @@ export class BaseQuery {
 
   incrementalRefreshKey(query, originalRefreshKey, options) {
     options = options || {};
+    const refreshKeyQuery = options.refreshKeyQuery || query;
     const updateWindow = options.window;
     const timeDimension = query.timeDimensions[0];
-    return query.caseWhenStatement([{
-      sql: `${query.nowTimestampSql()} < ${updateWindow ? this.addTimestampInterval(timeDimension.dateToParam(), updateWindow) : timeDimension.dateToParam()}`,
+    // TODO use timeDimension from refreshKeyQuery directly
+    const dateTo = refreshKeyQuery.timeStampCast(refreshKeyQuery.paramAllocator.allocateParam(timeDimension.dateTo()));
+    return refreshKeyQuery.caseWhenStatement([{
+      sql: `${refreshKeyQuery.nowTimestampSql()} < ${updateWindow ?
+        refreshKeyQuery.addTimestampInterval(dateTo, updateWindow) :
+        dateTo
+      }`,
       label: originalRefreshKey
     }]);
   }
@@ -2085,6 +2095,7 @@ export class BaseQuery {
       ['preAggregationInvalidateKeyQueries', cube, JSON.stringify(preAggregation)],
       () => {
         const preAggregationQueryForSql = this.preAggregationQueryForSqlEvaluation(cube, preAggregation);
+        let refreshKeyQuery = preAggregationQueryForSql;
         if (preAggregation.refreshKey) {
           if (preAggregation.refreshKey.sql) {
             return [
@@ -2096,8 +2107,10 @@ export class BaseQuery {
               })
             ];
           }
-
-          let [refreshKey, refreshKeyExternal] = this.everyRefreshKeySql(preAggregation.refreshKey);
+          // eslint-disable-next-line prefer-const
+          let [refreshKey, refreshKeyExternal, query] =
+            this.everyRefreshKeySql(preAggregation.refreshKey);
+          refreshKeyQuery = query;
           const renewalThreshold = this.refreshKeyRenewalThresholdForInterval(preAggregation.refreshKey);
           if (preAggregation.refreshKey.incremental) {
             if (!preAggregation.partitionGranularity) {
@@ -2112,19 +2125,19 @@ export class BaseQuery {
               refreshKey = this.incrementalRefreshKey(
                 preAggregationQueryForSql,
                 refreshKey,
-                { window: preAggregation.refreshKey.updateWindow }
+                { window: preAggregation.refreshKey.updateWindow, refreshKeyQuery }
               );
-              refreshKeyExternal = false;
             }
           }
           if (preAggregation.refreshKey.every || preAggregation.refreshKey.incremental) {
             return [
-              this.paramAllocator.buildSqlAndParams(`SELECT ${refreshKey}`).concat({
+              refreshKeyQuery.paramAllocator.buildSqlAndParams(this.refreshKeySelect(refreshKey)).concat({
                 external: refreshKeyExternal,
                 renewalThreshold,
+                incremental: preAggregation.refreshKey.incremental,
                 updateWindowSeconds: preAggregation.refreshKey.updateWindow &&
                   this.parseSecondDuration(preAggregation.refreshKey.updateWindow),
-                renewalThresholdOutsideUpdateWindow: preAggregation.refreshKey.updateWindow &&
+                renewalThresholdOutsideUpdateWindow: preAggregation.refreshKey.incremental &&
                   24 * 60 * 60
               })
             ];
@@ -2151,7 +2164,7 @@ export class BaseQuery {
               (originalRefreshKey, refreshKeyCube) => {
                 if (cubeFromPath.refreshKey && cubeFromPath.refreshKey.immutable) {
                   return [
-                    `SELECT ${this.incrementalRefreshKey(preAggregationQueryForSql, `(${originalRefreshKey})`)}`,
+                    this.refreshKeySelect(this.incrementalRefreshKey(preAggregationQueryForSql, `(${originalRefreshKey})`)),
                     false
                   ];
                 } else if (!cubeFromPath.refreshKey) {
@@ -2159,7 +2172,7 @@ export class BaseQuery {
                     every: '1 hour'
                   });
 
-                  return [`SELECT ${sql}`, external];
+                  return [this.refreshKeySelect(sql), external];
                 }
 
                 return originalRefreshKey;
