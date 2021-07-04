@@ -166,31 +166,31 @@ describe('SQL Generation', () => {
     const utcOffset = moment.tz('America/Los_Angeles').utcOffset() * 60;
     expect(query.everyRefreshKeySql({
       every: '1 hour'
-    })).toEqual(['FLOOR((EXTRACT(EPOCH FROM NOW())) / 3600)', false]);
+    })[0]).toEqual('FLOOR((EXTRACT(EPOCH FROM NOW())) / 3600)');
 
     // Standard syntax (minutes hours day month dow)
-    expect(query.everyRefreshKeySql({ every: '0 * * * *', timezone }))
-      .toEqual([`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - 0) / 3600)`, false]);
+    expect(query.everyRefreshKeySql({ every: '0 * * * *', timezone })[0])
+      .toEqual(`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - 0) / 3600)`);
 
-    expect(query.everyRefreshKeySql({ every: '0 10 * * *', timezone }))
-      .toEqual([`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - 36000) / 86400)`, false]);
+    expect(query.everyRefreshKeySql({ every: '0 10 * * *', timezone })[0])
+      .toEqual(`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - 36000) / 86400)`);
 
     // Additional syntax with seconds (seconds minutes hours day month dow)
-    expect(query.everyRefreshKeySql({ every: '0 * * * * *', timezone, }))
-      .toEqual([`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - 0) / 60)`, false]);
+    expect(query.everyRefreshKeySql({ every: '0 * * * * *', timezone, })[0])
+      .toEqual(`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - 0) / 60)`);
 
-    expect(query.everyRefreshKeySql({ every: '0 * * * *', timezone }))
-      .toEqual([`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - 0) / 3600)`, false]);
+    expect(query.everyRefreshKeySql({ every: '0 * * * *', timezone })[0])
+      .toEqual(`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - 0) / 3600)`);
 
-    expect(query.everyRefreshKeySql({ every: '30 * * * *', timezone }))
-      .toEqual([`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - 1800) / 3600)`, false]);
+    expect(query.everyRefreshKeySql({ every: '30 * * * *', timezone })[0])
+      .toEqual(`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - 1800) / 3600)`);
 
-    expect(query.everyRefreshKeySql({ every: '30 5 * * 5', timezone }))
-      .toEqual([`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - 365400) / 604800)`, false]);
+    expect(query.everyRefreshKeySql({ every: '30 5 * * 5', timezone })[0])
+      .toEqual(`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - 365400) / 604800)`);
 
     for (let i = 1; i < 59; i++) {
-      expect(query.everyRefreshKeySql({ every: `${i} * * * *`, timezone }))
-        .toEqual([`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - ${i * 60}) / ${1 * 60 * 60})`, false]);
+      expect(query.everyRefreshKeySql({ every: `${i} * * * *`, timezone })[0])
+        .toEqual(`FLOOR((${utcOffset} + EXTRACT(EPOCH FROM NOW()) - ${i * 60}) / ${1 * 60 * 60})`);
     }
 
     try {
@@ -221,7 +221,7 @@ describe('SQL Generation', () => {
     expect(query.cacheKeyQueries()).toEqual([
       [
         // Postgres dialect
-        "SELECT FLOOR((EXTRACT(EPOCH FROM NOW())) / 600)",
+        "SELECT FLOOR((EXTRACT(EPOCH FROM NOW())) / 600) as refresh_key",
         [],
         {
           // false, because there is no externalQueryClass
@@ -250,7 +250,7 @@ describe('SQL Generation', () => {
     expect(query.cacheKeyQueries()).toEqual([
       [
         // MSSQL dialect, because externalQueryClass
-        "SELECT FLOOR((DATEDIFF(SECOND,'1970-01-01', GETUTCDATE())) / 600)",
+        "SELECT FLOOR((DATEDIFF(SECOND,'1970-01-01', GETUTCDATE())) / 600) as refresh_key",
         [],
         {
           // true, because externalQueryClass
@@ -283,7 +283,7 @@ describe('SQL Generation', () => {
     expect(preAggregations[0].invalidateKeyQueries).toEqual([
       [
         // MSSQL dialect
-        "SELECT FLOOR((DATEDIFF(SECOND,'1970-01-01', GETUTCDATE())) / 3600)",
+        "SELECT FLOOR((DATEDIFF(SECOND,'1970-01-01', GETUTCDATE())) / 3600) as refresh_key",
         [],
         {
           external: true,
