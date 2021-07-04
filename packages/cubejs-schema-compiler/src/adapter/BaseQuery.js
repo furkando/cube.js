@@ -2070,22 +2070,6 @@ export class BaseQuery {
     }]);
   }
 
-  incrementalRefreshKeyRenewalThreshold(query, originalThreshold, updateWindow) {
-    const timeDimension = query.timeDimensions[0];
-    if (
-      updateWindow
-    ) {
-      const dateToDate = this.inIntegrationTimeZone(timeDimension.dateToFormatted())
-        .add(this.parseSecondDuration(updateWindow), 'second')
-        .toDate();
-      if (dateToDate < new Date()) {
-        // if dateTo passed just moments ago we want to renew it earlier in case of server and db clock don't match
-        return Math.min(Math.round((new Date().getTime() - dateToDate.getTime()) / 1000), 24 * 60 * 60);
-      }
-    }
-    return originalThreshold;
-  }
-
   defaultRefreshKeyRenewalThreshold() {
     return 10;
   }
@@ -2114,7 +2098,7 @@ export class BaseQuery {
           }
 
           let [refreshKey, refreshKeyExternal] = this.everyRefreshKeySql(preAggregation.refreshKey);
-          let renewalThreshold = this.refreshKeyRenewalThresholdForInterval(preAggregation.refreshKey);
+          const renewalThreshold = this.refreshKeyRenewalThresholdForInterval(preAggregation.refreshKey);
           if (preAggregation.refreshKey.incremental) {
             if (!preAggregation.partitionGranularity) {
               throw new UserError('Incremental refresh key can only be used for partitioned pre-aggregations');
@@ -2131,11 +2115,6 @@ export class BaseQuery {
                 { window: preAggregation.refreshKey.updateWindow }
               );
               refreshKeyExternal = false;
-              renewalThreshold = this.incrementalRefreshKeyRenewalThreshold(
-                preAggregationQueryForSql,
-                renewalThreshold,
-                preAggregation.refreshKey.updateWindow
-              );
             }
           }
           if (preAggregation.refreshKey.every || preAggregation.refreshKey.incremental) {
@@ -2143,6 +2122,10 @@ export class BaseQuery {
               this.paramAllocator.buildSqlAndParams(`SELECT ${refreshKey}`).concat({
                 external: refreshKeyExternal,
                 renewalThreshold,
+                updateWindowSeconds: preAggregation.refreshKey.updateWindow &&
+                  this.parseSecondDuration(preAggregation.refreshKey.updateWindow),
+                renewalThresholdOutsideUpdateWindow: preAggregation.refreshKey.updateWindow &&
+                  24 * 60 * 60
               })
             ];
           }

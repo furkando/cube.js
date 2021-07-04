@@ -765,7 +765,6 @@ describe('QueryOrchestrator', () => {
       query: 'SELECT * FROM stb_pre_aggregations.orders_d',
       values: [],
       cacheKeyQueries: {
-        refreshKeyRenewalThresholds: [],
         queries: []
       },
       preAggregations: [{
@@ -775,8 +774,11 @@ describe('QueryOrchestrator', () => {
           'CREATE TABLE stb_pre_aggregations.orders_d AS SELECT * FROM public.orders WHERE timestamp >= ? AND timestamp <= ?',
           ['__FROM_PARTITION_RANGE', '__TO_PARTITION_RANGE']
         ],
-        invalidateKeyQueries: [['SELECT NOW() as now', []]],
-        refreshKeyRenewalThresholds: [86400],
+        invalidateKeyQueries: [['SELECT CASE WHEN NOW() > ? THEN NOW() END as now', ['__TO_PARTITION_RANGE'], {
+          renewalThreshold: 1,
+          updateWindowSeconds: 86400,
+          renewalThresholdOutsideUpdateWindow: 86400
+        }]],
         preAggregationStartEndQueries: [
           ['SELECT MIN(timestamp) FROM orders', []],
           ['SELECT MAX(timestamp) FROM orders', []],
@@ -787,6 +789,12 @@ describe('QueryOrchestrator', () => {
       requestId: 'range partitions',
     };
     await queryOrchestrator.fetchQuery(query);
+    console.log(JSON.stringify(mockDriver.executedQueries));
+    expect(mockDriver.executedQueries.filter(q => q.match(/NOW/)).length).toEqual(152);
+    await mockDriver.delay(2000);
+    await queryOrchestrator.fetchQuery(query);
+    console.log(JSON.stringify(mockDriver.executedQueries));
+    expect(mockDriver.executedQueries.filter(q => q.match(/NOW/)).length).toEqual(152);
   });
 
   test('loadRefreshKeys', async () => {

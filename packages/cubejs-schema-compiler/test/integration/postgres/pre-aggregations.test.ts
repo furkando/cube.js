@@ -836,8 +836,6 @@ describe('PreAggregations', () => {
     });
   }));
 
-  // TODO move to orchestrator
-  /*
   it('incremental renewal threshold', () => compiler.compile().then(() => {
     const query = new PostgresQuery({ joinGraph, cubeEvaluator, compiler }, {
       measures: [
@@ -868,8 +866,8 @@ describe('PreAggregations', () => {
     const partitionedTables = preAggregationsDescription
       .filter(({ tableName }) => tableName.indexOf('visitors_partitioned') === 0);
 
-    expect(partitionedTables[0].invalidateKeyQueries[0][2].renewalThreshold).toEqual(86400);
-    expect(partitionedTables[partitionedTables.length - 1].invalidateKeyQueries[0][2].renewalThreshold).toEqual(300);
+    expect(partitionedTables[0].invalidateKeyQueries[0][2].updateWindowSeconds).toEqual(86400 * 7);
+    expect(partitionedTables[0].invalidateKeyQueries[0][2].renewalThresholdOutsideUpdateWindow).toEqual(86400);
 
     const queries = dbRunner.tempTablePreAggregations(preAggregationsDescription);
 
@@ -882,7 +880,6 @@ describe('PreAggregations', () => {
       );
     });
   }));
-   */
 
   it('partitioned', () => compiler.compile().then(() => {
     const query = new PostgresQuery({ joinGraph, cubeEvaluator, compiler }, {

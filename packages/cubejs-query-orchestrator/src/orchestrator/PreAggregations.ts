@@ -1,6 +1,14 @@
 import crypto from 'crypto';
 import R from 'ramda';
-import { getEnv, timeSeries, FROM_PARTITION_RANGE, TO_PARTITION_RANGE, inDbTimeZone, extractDate } from '@cubejs-backend/shared';
+import {
+  getEnv,
+  timeSeries,
+  FROM_PARTITION_RANGE,
+  TO_PARTITION_RANGE,
+  inDbTimeZone,
+  extractDate,
+  addSecondsToLocalTimestamp,
+} from '@cubejs-backend/shared';
 
 import { cancelCombinator, SaveCancelFn } from '../driver/utils';
 import { RedisCacheDriver } from './RedisCacheDriver';
@@ -92,6 +100,7 @@ type IndexDescription = {
 };
 
 type PreAggregationDescription = {
+  timezone: string;
   indexesSql: IndexDescription[];
   invalidateKeyQueries: QueryWithParams[];
   sql: QueryWithParams;
@@ -970,7 +979,10 @@ export class PreAggregationPartitionRangeLoader {
     dateRange: QueryDateRange,
     partitionTableName: string
   ): QueryWithParams {
-    const [sql, params] = query;
+    const [sql, params, options] = query;
+    const updateWindowToBoundary = options?.updateWindowSeconds && addSecondsToLocalTimestamp(
+      dateRange[1], this.preAggregation.timezone, options?.updateWindowSeconds
+    );
     return [sql.replace(this.preAggregation.tableName, partitionTableName), params.map(
       param => {
         if (dateRange && param === FROM_PARTITION_RANGE) {
@@ -981,7 +993,19 @@ export class PreAggregationPartitionRangeLoader {
           return param;
         }
       },
-    )];
+    ), {
+      ...options,
+      renewalThreshold:
+        options?.updateWindowSeconds &&
+        updateWindowToBoundary < new Date() ?
+          // if updateWindowToBoundary passed just moments ago we want to renew it earlier in case of server
+          // and db clock don't match
+          Math.min(
+            Math.round((new Date().getTime() - updateWindowToBoundary.getTime()) / 1000),
+            options?.renewalThresholdOutsideUpdateWindow
+          ) :
+          options?.renewalThreshold
+    }];
   }
 
   private partitionPreAggregationDescription(range: QueryDateRange): PreAggregationDescription {

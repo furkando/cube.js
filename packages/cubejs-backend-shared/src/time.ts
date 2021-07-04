@@ -48,3 +48,9 @@ export const extractDate = (data: any): string => {
   data = JSON.parse(JSON.stringify(data));
   return moment.tz(data[0] && data[0][Object.keys(data[0])[0]], 'UTC').utc().format(moment.HTML5_FMT.DATETIME_LOCAL_MS);
 };
+
+export const addSecondsToLocalTimestamp = (timestamp: string, timezone: string, seconds: number): Date => (
+  moment.tz(timestamp, timezone)
+    .add(seconds, 'second')
+    .toDate()
+);
