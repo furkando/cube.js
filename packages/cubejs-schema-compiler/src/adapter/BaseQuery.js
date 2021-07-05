@@ -1819,7 +1819,7 @@ export class BaseQuery {
   }
 
   preAggregationPreviewSql(tableName) {
-    return [`SELECT * FROM ${tableName} LIMIT 1000`];
+    return this.paramAllocator.buildSqlAndParams(`SELECT * FROM ${tableName} LIMIT 1000`);
   }
 
   indexSql(cube, preAggregation, index, indexName, tableName) {
