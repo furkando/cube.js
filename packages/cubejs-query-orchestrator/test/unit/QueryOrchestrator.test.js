@@ -786,6 +786,10 @@ describe('QueryOrchestrator', () => {
           renewalThresholdOutsideUpdateWindow: 86400,
           incremental: true
         }]],
+        indexesSql: [{
+          sql: ['CREATE INDEX orders_d_main ON stb_pre_aggregations.orders_d ("orders__created_at")', []],
+          indexName: 'orders_d_main'
+        }],
         preAggregationStartEndQueries: [
           ['SELECT MIN(timestamp) FROM orders', []],
           ['SELECT MAX(timestamp) FROM orders', []],

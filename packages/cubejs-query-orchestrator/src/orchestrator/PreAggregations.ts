@@ -88,7 +88,7 @@ type TableCacheEntry = {
 type QueryDateRange = [string, string];
 
 type IndexDescription = {
-  sql: string;
+  sql: QueryWithParams;
   indexName: string;
 };
 
@@ -1023,7 +1023,7 @@ export class PreAggregationPartitionRangeLoader {
       invalidateKeyQueries: (this.preAggregation.invalidateKeyQueries || [])
         .map(q => this.replacePartitionSqlAndParams(q, range, partitionTableName)),
       indexesSql: (this.preAggregation.indexesSql || [])
-        .map(q => ({ ...q, sql: q.sql.replace(this.preAggregation.tableName, partitionTableName) })),
+        .map(q => ({ ...q, sql: this.replacePartitionSqlAndParams(q.sql, range, partitionTableName) })),
       previewSql: this.preAggregation.previewSql &&
         this.replacePartitionSqlAndParams(this.preAggregation.previewSql, range, partitionTableName)
     };
